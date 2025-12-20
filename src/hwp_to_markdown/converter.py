@@ -4,13 +4,17 @@ import re
 import shutil
 import subprocess
 import tempfile
+import warnings
 from pathlib import Path
 from typing import Optional
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
 from markdownify import markdownify as md
 
 from .config import settings
+
+# hwp5html이 생성하는 XHTML을 lxml로 파싱할 때 발생하는 경고 억제
+warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
 
 class HwpConversionError(Exception):
@@ -131,6 +135,17 @@ def html_to_markdown(
     for tag in soup.find_all(["script", "style", "meta", "link"]):
         tag.decompose()
 
+    # 테이블 셀 안의 이미지를 마커로 치환 (markdownify가 테이블 내 이미지를 무시하는 문제 해결)
+    # 마커 형식: IMGPLACEHOLDER{index}ENDIMG (언더스코어 없이 - markdownify 이스케이프 방지)
+    image_placeholders: list[tuple[str, str, str]] = []  # (marker, img_src, alt)
+    for idx, img in enumerate(soup.find_all("img")):
+        if img.find_parent("table"):
+            src = img.get("src", "")
+            alt = img.get("alt", "")
+            marker = f"IMGPLACEHOLDER{idx}ENDIMG"
+            image_placeholders.append((marker, src, alt))
+            img.replace_with(marker)
+
     html = str(soup)
 
     # 이미지 경로 치환
@@ -144,6 +159,14 @@ def html_to_markdown(
         heading_style=settings.converter.heading_style,
         bullets=settings.converter.bullet_style,
     )
+
+    # 이미지 마커를 markdown 이미지 문법으로 복원
+    for marker, src, alt in image_placeholders:
+        # 이미지 경로 매핑 적용
+        if image_mapping and src in image_mapping:
+            src = image_mapping[src]
+        md_image = f"![{alt}]({src})"
+        markdown = markdown.replace(marker, md_image)
 
     # 후처리: 불필요한 빈 줄 정리
     markdown = re.sub(r"\n{3,}", "\n\n", markdown)
