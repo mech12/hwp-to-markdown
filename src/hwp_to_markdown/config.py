@@ -9,7 +9,6 @@ from typing import Literal
 class APIConfig:
     """API 서버 설정."""
 
-    host: str = field(default_factory=lambda: os.getenv("API_HOST", "0.0.0.0"))
     port: int = field(default_factory=lambda: int(os.getenv("API_PORT", "8000")))
 
 

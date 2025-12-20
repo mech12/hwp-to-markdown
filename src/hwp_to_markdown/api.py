@@ -215,6 +215,6 @@ if __name__ == "__main__":
 
     uvicorn.run(
         app,
-        host=settings.api.host,
+        host="0.0.0.0",
         port=settings.api.port,
     )
