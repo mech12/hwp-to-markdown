@@ -1,22 +1,22 @@
-"""HWP to Markdown CLI 도구."""
+"""HWP/HWPX to Markdown CLI 도구."""
 
 import argparse
 import sys
 from pathlib import Path
 
-from .converter import HwpConversionError, convert
+from .converter import ConversionMethod, HwpConversionError, convert
 
 
 def main() -> int:
     """CLI 진입점."""
     parser = argparse.ArgumentParser(
         prog="hwp2md",
-        description="HWP 파일을 Markdown으로 변환합니다.",
+        description="HWP/HWPX 파일을 Markdown으로 변환합니다.",
     )
     parser.add_argument(
         "files",
         nargs="+",
-        help="변환할 HWP 파일 경로",
+        help="변환할 HWP/HWPX 파일 경로",
     )
     parser.add_argument(
         "-o",
@@ -32,6 +32,19 @@ def main() -> int:
         help="이미지 저장 디렉토리",
     )
     parser.add_argument(
+        "-m",
+        "--method",
+        choices=["auto", "pyhwp", "hwpx-native", "libreoffice"],
+        default="auto",
+        help=(
+            "변환 방법 선택: "
+            "auto=자동 감지(기본), "
+            "pyhwp=pyhwp 사용(HWP만), "
+            "hwpx-native=HWPX 네이티브 파서, "
+            "libreoffice=LibreOffice 사용(HWP/HWPX)"
+        ),
+    )
+    parser.add_argument(
         "-q",
         "--quiet",
         action="store_true",
@@ -39,6 +52,9 @@ def main() -> int:
     )
 
     args = parser.parse_args()
+
+    # 변환 방법 파싱
+    method = ConversionMethod(args.method)
 
     # 파일 목록 확장 (glob 패턴 처리)
     files = []
@@ -55,7 +71,7 @@ def main() -> int:
                 print(f"경고: 파일을 찾을 수 없습니다: {pattern}", file=sys.stderr)
 
     if not files:
-        print("오류: 변환할 HWP 파일이 없습니다.", file=sys.stderr)
+        print("오류: 변환할 HWP/HWPX 파일이 없습니다.", file=sys.stderr)
         return 1
 
     # 단일 파일 + -o 옵션
@@ -63,12 +79,13 @@ def main() -> int:
         try:
             hwp_file = files[0]
             if not args.quiet:
-                print(f"변환 중: {hwp_file}")
+                print(f"변환 중: {hwp_file} (방법: {method.value})")
 
             markdown = convert(
                 hwp_file,
                 output=args.output,
                 images_dir=args.images_dir,
+                method=method,
             )
 
             if not args.output:
@@ -93,7 +110,7 @@ def main() -> int:
     for hwp_file in files:
         try:
             if not args.quiet:
-                print(f"변환 중: {hwp_file}")
+                print(f"변환 중: {hwp_file} (방법: {method.value})")
 
             # 출력 파일명 생성
             output_file = output_dir / f"{hwp_file.stem}.md"
@@ -102,6 +119,7 @@ def main() -> int:
                 hwp_file,
                 output=output_file,
                 images_dir=args.images_dir,
+                method=method,
             )
 
             if not args.quiet:

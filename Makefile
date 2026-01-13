@@ -18,10 +18,10 @@ install-api:  ## API 의존성 설치
 sync:  ## 모든 의존성 설치
 	uv sync --extra dev --extra api
 
-convert-samples:  ## 샘플 HWP 파일을 Markdown으로 변환
+convert-samples:  ## 샘플 HWP/HWPX 파일을 Markdown으로 변환
 	@mkdir -p $(OUTPUT_DIR)
-	@echo "Converting sample HWP files to Markdown..."
-	@for file in $(SAMPLE_DIR)/*.hwp; do \
+	@echo "Converting sample HWP/HWPX files to Markdown..."
+	@for file in $(SAMPLE_DIR)/*.hwp $(SAMPLE_DIR)/*.hwpx; do \
 		if [ -f "$$file" ]; then \
 			echo "  Converting: $$file"; \
 			uv run hwp2md "$$file" --output-dir $(OUTPUT_DIR) || true; \

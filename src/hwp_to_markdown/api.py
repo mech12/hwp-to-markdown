@@ -1,13 +1,15 @@
-"""HWP to Markdown FastAPI 웹 API."""
+"""HWP/HWPX to Markdown FastAPI 웹 API."""
 
 import io
 import shutil
 import tempfile
 import zipfile
+from enum import Enum
 from pathlib import Path
+from typing import Optional
 from urllib.parse import quote
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import Response, StreamingResponse
 
 
@@ -23,13 +25,31 @@ def make_content_disposition(filename: str, disposition: str = "attachment") -> 
 
     return f"{disposition}; filename=\"{ascii_filename}\"; filename*=UTF-8''{encoded_filename}"
 
+
 from .config import settings
-from .converter import HwpConversionError, convert, extract_images, hwp_to_html, html_to_markdown
+from .converter import (
+    ConversionMethod,
+    HwpConversionError,
+    convert,
+    extract_images,
+    html_to_markdown,
+    hwp_to_html,
+)
+
+
+class APIConversionMethod(str, Enum):
+    """API에서 사용하는 변환 방법 열거형."""
+
+    AUTO = "auto"
+    PYHWP = "pyhwp"
+    HWPX_NATIVE = "hwpx-native"
+    LIBREOFFICE = "libreoffice"
+
 
 app = FastAPI(
-    title="HWP to Markdown API",
-    description="한글 문서(HWP)를 Markdown으로 변환하는 웹 API",
-    version="0.1.0",
+    title="HWP/HWPX to Markdown API",
+    description="한글 문서(HWP, HWPX)를 Markdown으로 변환하는 웹 API",
+    version="0.2.0",
 )
 
 
@@ -38,13 +58,38 @@ def get_images_dir_name() -> str:
     return settings.converter.images_dir_name
 
 
+def _validate_file(filename: Optional[str]) -> None:
+    """파일 확장자 검증."""
+    if not filename:
+        raise HTTPException(
+            status_code=400,
+            detail="파일명이 필요합니다.",
+        )
+
+    ext = filename.lower()
+    if not ext.endswith((".hwp", ".hwpx")):
+        raise HTTPException(
+            status_code=400,
+            detail="HWP 또는 HWPX 파일만 업로드 가능합니다.",
+        )
+
+
+def _get_temp_suffix(filename: str) -> str:
+    """파일명에서 임시 파일 확장자 추출."""
+    if filename.lower().endswith(".hwpx"):
+        return ".hwpx"
+    return ".hwp"
+
+
 @app.get("/")
 async def root():
     """API 상태 확인."""
     return {
         "status": "ok",
         "service": "hwp-to-markdown",
-        "version": "0.1.0",
+        "version": "0.2.0",
+        "supported_formats": ["hwp", "hwpx"],
+        "conversion_methods": ["auto", "pyhwp", "hwpx-native", "libreoffice"],
     }
 
 
@@ -55,32 +100,38 @@ async def health():
 
 
 @app.post("/convert")
-async def convert_hwp_to_markdown(file: UploadFile = File(...)):
-    """HWP 파일을 Markdown 텍스트로 변환.
+async def convert_hwp_to_markdown(
+    file: UploadFile = File(...),
+    method: APIConversionMethod = Query(
+        default=APIConversionMethod.AUTO,
+        description="변환 방법: auto, pyhwp, hwpx-native, libreoffice",
+    ),
+):
+    """HWP/HWPX 파일을 Markdown 텍스트로 변환.
 
     Args:
-        file: 업로드된 HWP 파일
+        file: 업로드된 HWP/HWPX 파일
+        method: 변환 방법 (auto, pyhwp, hwpx-native, libreoffice)
 
     Returns:
-        JSON 응답: {"filename": str, "markdown": str}
+        JSON 응답: {"filename": str, "markdown": str, "method": str}
     """
-    if not file.filename or not file.filename.lower().endswith(".hwp"):
-        raise HTTPException(
-            status_code=400,
-            detail="HWP 파일만 업로드 가능합니다.",
-        )
+    _validate_file(file.filename)
+
+    suffix = _get_temp_suffix(file.filename)
 
     # 임시 파일로 저장
-    with tempfile.NamedTemporaryFile(suffix=".hwp", delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp_path = Path(tmp.name)
         content = await file.read()
         tmp.write(content)
 
     try:
-        markdown = convert(tmp_path)
+        markdown = convert(tmp_path, method=ConversionMethod(method.value))
         return {
             "filename": file.filename,
             "markdown": markdown,
+            "method": method.value,
         }
 
     except HwpConversionError as e:
@@ -91,29 +142,34 @@ async def convert_hwp_to_markdown(file: UploadFile = File(...)):
 
 
 @app.post("/convert/file")
-async def convert_hwp_to_markdown_file(file: UploadFile = File(...)):
-    """HWP 파일을 Markdown 파일로 변환하여 다운로드.
+async def convert_hwp_to_markdown_file(
+    file: UploadFile = File(...),
+    method: APIConversionMethod = Query(
+        default=APIConversionMethod.AUTO,
+        description="변환 방법: auto, pyhwp, hwpx-native, libreoffice",
+    ),
+):
+    """HWP/HWPX 파일을 Markdown 파일로 변환하여 다운로드.
 
     Args:
-        file: 업로드된 HWP 파일
+        file: 업로드된 HWP/HWPX 파일
+        method: 변환 방법 (auto, pyhwp, hwpx-native, libreoffice)
 
     Returns:
         Markdown 파일 다운로드
     """
-    if not file.filename or not file.filename.lower().endswith(".hwp"):
-        raise HTTPException(
-            status_code=400,
-            detail="HWP 파일만 업로드 가능합니다.",
-        )
+    _validate_file(file.filename)
+
+    suffix = _get_temp_suffix(file.filename)
 
     # 임시 파일로 저장
-    with tempfile.NamedTemporaryFile(suffix=".hwp", delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp_path = Path(tmp.name)
         content = await file.read()
         tmp.write(content)
 
     try:
-        markdown = convert(tmp_path)
+        markdown = convert(tmp_path, method=ConversionMethod(method.value))
 
         # 파일명 생성
         md_filename = Path(file.filename).stem + ".md"
@@ -134,41 +190,49 @@ async def convert_hwp_to_markdown_file(file: UploadFile = File(...)):
 
 
 @app.post("/convert/zip")
-async def convert_hwp_to_zip(file: UploadFile = File(...)):
-    """HWP 파일을 Markdown + 이미지가 포함된 ZIP으로 변환.
+async def convert_hwp_to_zip(
+    file: UploadFile = File(...),
+    method: APIConversionMethod = Query(
+        default=APIConversionMethod.AUTO,
+        description="변환 방법: auto, pyhwp, hwpx-native, libreoffice",
+    ),
+):
+    """HWP/HWPX 파일을 Markdown + 이미지가 포함된 ZIP으로 변환.
 
     Args:
-        file: 업로드된 HWP 파일
+        file: 업로드된 HWP/HWPX 파일
+        method: 변환 방법 (auto, pyhwp, hwpx-native, libreoffice)
 
     Returns:
         ZIP 파일 다운로드 (markdown.md + images/ 폴더)
     """
-    if not file.filename or not file.filename.lower().endswith(".hwp"):
-        raise HTTPException(
-            status_code=400,
-            detail="HWP 파일만 업로드 가능합니다.",
-        )
+    _validate_file(file.filename)
+
+    suffix = _get_temp_suffix(file.filename)
 
     # 임시 파일로 저장
-    with tempfile.NamedTemporaryFile(suffix=".hwp", delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp_path = Path(tmp.name)
         content = await file.read()
         tmp.write(content)
 
     tmpdir = None
     try:
-        # HWP → HTML 변환
-        html_content, tmpdir = hwp_to_html(tmp_path)
+        # 변환 방법에 따른 처리
+        conversion_method = ConversionMethod(method.value)
 
         # 임시 출력 디렉토리
         with tempfile.TemporaryDirectory() as output_dir:
             output_path = Path(output_dir)
+            md_file = output_path / "temp.md"
 
-            # 이미지 추출
-            image_mapping = extract_images(tmpdir, output_path)
-
-            # Markdown 변환
-            markdown = html_to_markdown(html_content, image_mapping)
+            # 변환 실행 (이미지 추출 포함)
+            markdown = convert(
+                tmp_path,
+                output=md_file,
+                images_dir=output_path,
+                method=conversion_method,
+            )
 
             # ZIP 파일 생성
             zip_buffer = io.BytesIO()
